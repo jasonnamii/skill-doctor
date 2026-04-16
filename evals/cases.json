@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "description": "skill-doctor evaluation cases. Each case: target skill, expected pathology hits, expected grade range.",
+  "cases": [
+    {
+      "id": "case-001",
+      "name": "healthy skill baseline",
+      "target": "skill-doctor",
+      "expected_score_min": 65,
+      "expected_grade": ["ORANGE", "GREEN"],
+      "expected_fails_max": 4,
+      "notes": "Self-diagnosis. Should score at least ORANGE."
+    },
+    {
+      "id": "case-002",
+      "name": "UP mode activation",
+      "target_marker": "M1. FRAME in content",
+      "expected_mode": "up",
+      "expected_weights": {"5": 3, "6": 3, "7": 3, "8": 3},
+      "notes": "UP detection should activate weighted mode."
+    },
+    {
+      "id": "case-003",
+      "name": "missing NOT section",
+      "synthetic_skill": {
+        "description": "Test skill. P1: test. P2: do. P3: test. P5: .md."
+      },
+      "expected_cells": {"6-1": "FAIL"},
+      "notes": "No NOT routing triggers 6-1 FAIL."
+    },
+    {
+      "id": "case-004",
+      "name": "bloated SKILL.md",
+      "synthetic_size": 15000,
+      "expected_cells": {"5-1": "FAIL"},
+      "notes": "SKILL.md >10KB triggers bloat FAIL."
+    },
+    {
+      "id": "case-005",
+      "name": "minimum trigger tier",
+      "synthetic_skill": {
+        "description": "P1: a, b, c. P2: do. P3: x. P5: .md. NOT: y(→z)."
+      },
+      "expected_cells": {"2-2": "FAIL"},
+      "notes": "P1 < 5 triggers 2-2 FAIL."
+    }
+  ],
+  "run_manually": "python ../scripts/skill_scanner.py scan <target> and compare with expected"
+}
