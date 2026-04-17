@@ -63,15 +63,20 @@ STANDARD_ACTIONS = {
     "8-4": ("축적 연계", "session-briefing + CHANGELOG 연동"),
 }
 
-EFFORT = {
-    "1-1": 30, "1-2": 20, "1-3": 10, "1-4": 30,
-    "2-1": 10, "2-2": 10, "2-3": 20, "2-4": 20,
-    "3-1": 10, "3-2": 15, "3-3": 10, "3-4": 30,
-    "4-1": 15, "4-2": 20, "4-3": 20, "4-4": 30,
-    "5-1": 60, "5-2": 60, "5-3": 20, "5-4": 20,
-    "6-1": 5, "6-2": 15, "6-3": 30, "6-4": 60,
-    "7-1": 5, "7-2": 20, "7-3": 60, "7-4": 10,
-    "8-1": 30, "8-2": 15, "8-3": 10, "8-4": 30,
+# LLM-native cost estimates replacing man-hour (minute) table.
+# Each entry: (turns, rollback, regression_risk)
+#   turns: expected Claude conversation turns (1 turn = 1 edit + 1 verify)
+#   rollback: L=single-file revert, M=multi-file restore, H=cross-skill cascade
+#   regression_risk: L=isolated, M=intra-skill, H=cross-skill cascade
+TURNS = {
+    "1-1": (2, "L", "M"), "1-2": (2, "L", "M"), "1-3": (1, "L", "L"), "1-4": (3, "M", "M"),
+    "2-1": (1, "L", "L"), "2-2": (1, "L", "L"), "2-3": (2, "L", "M"), "2-4": (2, "L", "M"),
+    "3-1": (1, "L", "L"), "3-2": (2, "L", "L"), "3-3": (1, "L", "L"), "3-4": (3, "M", "M"),
+    "4-1": (2, "L", "M"), "4-2": (2, "L", "M"), "4-3": (2, "M", "M"), "4-4": (3, "M", "M"),
+    "5-1": (3, "M", "M"), "5-2": (3, "M", "M"), "5-3": (2, "L", "L"), "5-4": (2, "L", "L"),
+    "6-1": (1, "L", "M"), "6-2": (2, "L", "M"), "6-3": (3, "M", "H"), "6-4": (4, "M", "H"),
+    "7-1": (1, "L", "L"), "7-2": (2, "L", "M"), "7-3": (3, "L", "L"), "7-4": (1, "L", "L"),
+    "8-1": (2, "L", "L"), "8-2": (2, "L", "L"), "8-3": (1, "L", "L"), "8-4": (3, "M", "M"),
 }
 
 
@@ -90,7 +95,7 @@ def render_matrix(cells: Dict) -> str:
 
 def rank_red_flags(cells: Dict, top_n: int = 3) -> List[Dict]:
     """Rank FAIL cells by severity."""
-    # Priority: FAIL first, then by effort (lower = more critical to fix fast)
+    # Priority: FAIL first, then by turn count (fewer turns = faster to fix)
     fails = [(cid, c) for cid, c in cells.items() if c["status"] == "FAIL"]
     # Sort: essence (2,5,7) first, then others
     essence_priority = {"2": 0, "5": 0, "7": 0, "4": 1, "8": 1, "1": 2, "3": 2, "6": 2}
@@ -114,17 +119,22 @@ def triage(cells: Dict) -> Dict:
 
 
 def render_prescription(cells: Dict, triage_result: Dict) -> str:
-    """Render prescription section."""
+    """Render prescription section (LLM-native cost: turns / rollback / regression risk)."""
     out = ["## 💊 처방 우선순위\n"]
-    out.append("| 순위 | 병리·원인 | 액션 | 공수(분) |")
-    out.append("|---|---|---|---|")
+    out.append("| 순위 | 병리·원인 | 액션 | 턴 | R | RegR |")
+    out.append("|---|---|---|---|---|---|")
     for priority in ("P0", "P1", "P2"):
         for cid in triage_result.get(priority, []):
             cell = cells[cid]
             action_name, action_desc = STANDARD_ACTIONS.get(cid, ("-", "-"))
-            effort = EFFORT.get(cid, 15)
+            turns, rollback, reg_risk = TURNS.get(cid, (2, "L", "L"))
             p_label = PATHOLOGY_LABELS.get(cid.split("-")[0], "?")
-            out.append(f"| {priority} | {p_label}-{cid.split('-')[1]} | {action_name}: {action_desc} | {effort} |")
+            out.append(
+                f"| {priority} | {p_label}-{cid.split('-')[1]} | {action_name}: {action_desc} "
+                f"| {turns} | {rollback} | {reg_risk} |"
+            )
+    out.append("")
+    out.append("*턴=Claude 대화 턴(1턴=편집1+검증1), R=롤백비용, RegR=회귀리스크. L=낮음/M=중간/H=높음.*")
     return "\n".join(out)
 
 

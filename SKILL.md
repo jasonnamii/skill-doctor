@@ -24,6 +24,7 @@ description: |
 | 3 | **증거 기반 판정** — FAIL/WARN 시 반드시 근거(파일경로·라인·grep결과) 병기 | 주관 판정 금지 |
 | 4 | **UP은 가중치 모드** — UP 진단 시 `references/up-specific-rules.md` 자동 로드, 비대·고립·진화불능 가중치 ×3 | 상시 로드 특성 반영 |
 | 5 | **자기참조 허용** — skill-doctor로 skill-doctor 진단 가능 (무한루프 방지 위해 1회만) | 자기검증 필수 |
+| 6 | **LLM-native 비용 추정** — 처방에는 `턴 수 + 롤백(L/M/H) + 회귀리스크(L/M/H)` 3축만. 분·시간·man-hour 단위 사용 = FAIL | LLM 실행은 인간 공수와 비용 구조가 다름. 분 단위는 가짜 정밀도 |
 
 ---
 
@@ -151,3 +152,4 @@ python skill-doctor/scripts/report_generator.py --scan-result self-scan.json --t
 | 진단→수정 직행 | skill-doctor는 진단만. 수정은 반드시 skill-builder로 위임 (절대규칙 1) |
 | 32셀 일부 스킵 | N/A도 명시 필수. 빈 셀 = FAIL (MECE 깨짐) |
 | Python 스크립트 미실행 | 수동 체크는 오류 가능. 반드시 skill_scanner.py 실행 후 결과 검토 |
+| 처방전에 "30분·2시간" 식 man-hour 단위 | LLM 비용과 무관 — 가짜 정밀도로 사용자 판단 왜곡. `턴+R+RegR` 3축으로만 기재 (절대규칙 6) |
