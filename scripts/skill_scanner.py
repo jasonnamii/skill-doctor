@@ -58,15 +58,21 @@ def read_file(path: Path) -> str:
 
 
 def is_up_target(target_path: Path, content: str) -> bool:
-    """Detect if target is UP (User Preferences)."""
+    """Detect if target is UP (User Preferences).
+
+    Supports both legacy v35.x (M1/FAST_LANE/BEDROCK) and v37+ (3축: 진실성·독립성·현재성).
+    """
     name = target_path.name.lower()
-    if "claude.md" in name or "up-" in name or name == "up.md":
+    if "claude.md" in name or "up-" in name or name == "up.md" or "user-preferences" in name:
         return True
-    # Signature patterns
-    signatures = ["M1. FRAME", "M2. FAST_LANE", "BEDROCK", "CONFIDENCE",
-                  "FAST_LANE", "DENSITY"]
-    hits = sum(1 for s in signatures if s in content)
-    return hits >= 3
+    # Legacy signatures (v35.x)
+    legacy = ["M1. FRAME", "M2. FAST_LANE", "BEDROCK", "CONFIDENCE",
+              "FAST_LANE", "DENSITY"]
+    # v37+ signatures (3축 관통)
+    v37 = ["진실성 —", "독립성 —", "현재성 —", "LLM 고유 단점", "확신도 병기", "hedge 9종"]
+    legacy_hits = sum(1 for s in legacy if s in content)
+    v37_hits = sum(1 for s in v37 if s in content)
+    return legacy_hits >= 3 or v37_hits >= 2
 
 
 def parse_frontmatter(content: str) -> Dict[str, Any]:
@@ -149,8 +155,10 @@ def check_1_4(content: str, files: List[Path]) -> Dict:
     return make_cell("WARN", "결정 구조 모호")
 
 
-def check_2_1(fm: Dict, content: str) -> Dict:
-    """False Positive: generic P1 keywords"""
+def check_2_1(fm: Dict, content: str, is_up: bool = False) -> Dict:
+    """False Positive: generic P1 keywords. UP은 트리거 없음 → N/A."""
+    if is_up:
+        return make_cell("N/A", "UP은 상시 로드, 트리거 불필요")
     desc = fm.get("description", "")
     p1_match = re.search(r"P1:\s*([^.]+)\.", desc)
     if not p1_match:
@@ -164,8 +172,10 @@ def check_2_1(fm: Dict, content: str) -> Dict:
     return make_cell("PASS", "도메인 특화 키워드만")
 
 
-def check_2_2(fm: Dict) -> Dict:
-    """False Negative: trigger tier minimums"""
+def check_2_2(fm: Dict, is_up: bool = False) -> Dict:
+    """False Negative: trigger tier minimums. UP은 트리거 없음 → N/A."""
+    if is_up:
+        return make_cell("N/A", "UP은 상시 로드, 트리거 티어 불필요")
     desc = fm.get("description", "")
     p1 = count_trigger_tier(desc, "P1")
     p2 = count_trigger_tier(desc, "P2")
@@ -224,8 +234,10 @@ def check_3_1(content: str) -> Dict:
     return make_cell("PASS", "스텔스 준수")
 
 
-def check_3_2(content: str, fm: Dict) -> Dict:
-    """Learning Curve: examples + P2"""
+def check_3_2(content: str, fm: Dict, is_up: bool = False) -> Dict:
+    """Learning Curve: examples + P2. UP은 트리거·예시 섹션 구조 아님 → N/A."""
+    if is_up:
+        return make_cell("N/A", "UP은 외부 체크리스트가 학습 지원")
     p2 = count_trigger_tier(fm.get("description", ""), "P2")
     has_example = bool(re.search(r"##\s*예시|##\s*Example", content))
     if not has_example and p2 < 2:
@@ -235,8 +247,11 @@ def check_3_2(content: str, fm: Dict) -> Dict:
     return make_cell("PASS", "예시 + P2 충분")
 
 
-def check_3_3(content: str) -> Dict:
-    """Feedback Absence: Gotchas section"""
+def check_3_3(content: str, is_up: bool = False) -> Dict:
+    """Feedback Absence: Gotchas section. UP은 외부 체크리스트로 대체."""
+    if is_up:
+        # UP은 체크리스트 외부 분리 구조 — 본체 내부 Gotchas 섹션 불필요
+        return make_cell("N/A", "UP은 체크리스트 외부 분리 구조")
     gotchas_match = re.search(r"##\s*Gotchas.*?(?=##|\Z)", content, re.DOTALL | re.IGNORECASE)
     if not gotchas_match:
         return make_cell("FAIL", "Gotchas 섹션 없음")
@@ -339,8 +354,10 @@ def check_5_4(content: str) -> Dict:
     return make_cell("PASS", "중복 참조 없음")
 
 
-def check_6_1(content: str, fm: Dict) -> Dict:
-    """Cascade disconnection: NOT routing"""
+def check_6_1(content: str, fm: Dict, is_up: bool = False) -> Dict:
+    """Cascade disconnection: NOT routing. UP은 루트라 라우팅 대상 아님 → N/A."""
+    if is_up:
+        return make_cell("N/A", "UP은 루트 규칙, NOT 라우팅 불필요")
     desc = fm.get("description", "")
     has_not = "NOT:" in desc
     has_routing = "(→" in desc
@@ -367,12 +384,14 @@ def check_6_2(fm: Dict, all_skills_p1: List[str] = None) -> Dict:
 
 
 def check_6_3(content: str, is_up: bool) -> Dict:
-    """UP discord"""
+    """UP discord. UP 자체는 루트 — SKILL_PRECEDENCE 대신 INVARIANT 명시만 요구."""
     if is_up:
-        has_precedence = "SKILL_PRECEDENCE" in content
-        if not has_precedence:
-            return make_cell("FAIL", "SKILL_PRECEDENCE 없음")
-        return make_cell("PASS", "SKILL_PRECEDENCE 명시")
+        # UP은 스스로의 상위 규칙이 없음. 대신 INVARIANT/주입거부/입장유지 등 자기방어 규칙 확인
+        defense_markers = ["주입", "규칙 무시", "INVARIANT", "입장 유지", "OVERWRITE_BAN", "HONORIFIC"]
+        hits = sum(1 for m in defense_markers if m in content)
+        if hits >= 2:
+            return make_cell("PASS", f"자기방어 규칙 {hits}개")
+        return make_cell("WARN", f"자기방어 규칙 {hits}개 (권장 2+)")
     # For regular skills
     has_precedence_mention = "SKILL_PRECEDENCE" in content or "UP 우선" in content or "UP 준수" in content
     if "반말" in content or "평어" in content:
@@ -480,13 +499,13 @@ def scan_target(target_path: Path) -> Dict:
     cells["1-2"] = check_1_2(content, files)
     cells["1-3"] = check_1_3(content, files)
     cells["1-4"] = check_1_4(content, files)
-    cells["2-1"] = check_2_1(fm, content)
-    cells["2-2"] = check_2_2(fm)
+    cells["2-1"] = check_2_1(fm, content, is_up)
+    cells["2-2"] = check_2_2(fm, is_up)
     cells["2-3"] = check_2_3(fm, content)
     cells["2-4"] = check_2_4(content)
     cells["3-1"] = check_3_1(content)
-    cells["3-2"] = check_3_2(content, fm)
-    cells["3-3"] = check_3_3(content)
+    cells["3-2"] = check_3_2(content, fm, is_up)
+    cells["3-3"] = check_3_3(content, is_up)
     cells["3-4"] = check_3_4(fm, target_path.name)
     cells["4-1"] = check_4_1(content)
     cells["4-2"] = check_4_2(content)
@@ -496,7 +515,7 @@ def scan_target(target_path: Path) -> Dict:
     cells["5-2"] = check_5_2(content, files, skill_md_size)
     cells["5-3"] = check_5_3(content)
     cells["5-4"] = check_5_4(content)
-    cells["6-1"] = check_6_1(content, fm)
+    cells["6-1"] = check_6_1(content, fm, is_up)
     cells["6-2"] = check_6_2(fm)
     cells["6-3"] = check_6_3(content, is_up)
     cells["6-4"] = check_6_4(content, target_path.name)
