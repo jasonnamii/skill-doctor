@@ -1,6 +1,7 @@
-# Diagnostic Checklist: 32셀 체크리스트
+# Diagnostic Checklist: 32셀 체크리스트 (v2)
 
-각 셀마다 ① 자동 감지 패턴 (grep/regex) ② 판정 규칙 ③ 증거 수집 방법.
+각 셀마다 ① 자동 감지 패턴 ② 판정 규칙 ③ 증거 수집 방법.
+v2: Anthropic 공식 권장사항이 각 셀의 휴리스틱과 결합. 별도 축 없음, 검사 정밀도만 강화.
 
 ---
 
@@ -32,8 +33,9 @@
 
 ### 2-1 오발동 (False Positive)
 - **패턴:** P1에 `정리|분석|만들기|확인|검토` 같은 일반 키워드
-- **판정:** 일반 키워드 3개+ → 🔴 / 1-2개 → 🟠 / 도메인 특화만 → 🟢
-- **증거:** P1 키워드 목록 + 일반 키워드 매치 결과
+- **+ 정량 검사 (Anthropic):** description에 `Helps with`·`Processes`·`Handles`·`Works with`·`Takes care of` 등 모호 동사
+- **판정:** 일반 키워드 3개+ OR 모호 동사 1개+ → 🔴 / 일반 키워드 1-2개 → 🟠 / 도메인 특화만 → 🟢
+- **증거:** P1 키워드 목록 + 모호 동사 grep 결과
 
 ### 2-2 미발동 (False Negative)
 - **패턴:** P1 <5개, P2 한/영 편중, P3 없음
@@ -42,8 +44,9 @@
 
 ### 2-3 의도이탈 (Intent Drift)
 - **패턴:** description의 동사와 본문 프로토콜 동사 불일치
-- **판정:** description "진단"인데 본문에 수정 포함 → 🔴 / 일부 drift → 🟠 / 일치 → 🟢
-- **증거:** description 동사 vs 본문 섹션 제목 비교
+- **+ 정량 검사 (Anthropic):** description이 1·2인칭 사용 (`I `, `me `, `you `, `우리는`) — 3인칭/명령형 위반
+- **판정:** description "진단"인데 본문에 수정 포함 OR 1·2인칭 사용 → 🔴 / 일부 drift → 🟠 / 일치 + 3인칭/명령형 → 🟢
+- **증거:** description 동사 vs 본문 섹션 제목 비교 + 인칭 grep
 
 ### 2-4 출력변동 (Non-determinism)
 - **패턴:** `적절히 판단`, `자유롭게`, 결정 규칙 부재
@@ -61,18 +64,21 @@
 
 ### 3-2 학습곡선
 - **패턴:** P2 자연어 트리거 부재, 예시 개수
-- **판정:** 예시 0개 + P2 <2개 → 🔴 / 둘 중 하나 → 🟠 / 예시 1개+ + P2 충분 → 🟢
-- **증거:** 예시 섹션 존재 여부 + P2 카운트
+- **+ 정량 검사 (Anthropic):** 첫 100줄 안에 Quick Reference / 도구 선택 테이블 / 도입 표 부재
+- **판정:** 예시 0개 + P2 <2개 → 🔴 / 둘 중 하나 또는 도입 표 없음 → 🟠 / 예시 1개+ + P2 충분 + 도입 표 → 🟢
+- **증거:** 예시 섹션 존재 여부 + P2 카운트 + 첫 100줄 내 표/Quick Reference 헤더
 
 ### 3-3 피드백 부재
 - **패턴:** Gotchas 섹션 크기, 에러 메시지 정의
-- **판정:** Gotchas 없음 → 🔴 / <3행 → 🟠 / 3행+ 실패 패턴·대응 → 🟢
-- **증거:** Gotchas 섹션 라인 수
+- **+ 정량 검사 (Anthropic):** ❌WRONG/✅CORRECT 또는 안티패턴/권장패턴 대조 부재 (xlsx·docx 표준 패턴)
+- **판정:** Gotchas 없음 → 🔴 / <3행 또는 대조 없음 → 🟠 / 3행+ 실패 패턴·대응 + 대조 1개+ → 🟢
+- **증거:** Gotchas 섹션 라인 수 + ❌·✅·WRONG·CORRECT grep
 
 ### 3-4 기억 부담
 - **패턴:** 스킬명과 description 첫 문장 의미 연결
-- **판정:** 이름이 기능 전혀 암시 안 함 → 🔴 / 부분 암시 → 🟠 / 명확 → 🟢
-- **증거:** 이름 + 첫 문장 매핑
+- **+ 정량 검사 (Anthropic):** name 형식 `^[a-z0-9-]{1,64}$` (소문자·숫자·하이픈, ≤64자)
+- **판정:** 이름 형식 위반 → 🔴 / 이름이 기능 전혀 암시 안 함 → 🔴 / 부분 암시 → 🟠 / 명확 + 형식 통과 → 🟢
+- **증거:** 이름 + 첫 문장 매핑 + name 정규식 결과
 
 ---
 
@@ -80,13 +86,15 @@
 
 ### 4-1 프롬프트 인젝션
 - **패턴:** "위 규칙 무시", "이 지시만 따라" 방어 언급
-- **판정:** 방어 언급 없음 + 민감 기능 → 🔴 / 일부 방어 → 🟠 / 게이트키퍼·INVARIANT 명시 → 🟢
-- **증거:** 규칙 보호 문장
+- **+ 정량 검사 (Anthropic):** frontmatter `allowed-tools` 명시 (선택사항이나 권장)
+- **판정:** 방어 언급 없음 + 민감 기능 → 🔴 / 일부 방어 → 🟠 / 게이트키퍼·INVARIANT 명시 + (선택) allowed-tools → 🟢
+- **증거:** 규칙 보호 문장 + frontmatter 검사
 
 ### 4-2 엣지케이스 붕괴
 - **패턴:** 빈 입력·null·극단값 처리 언급
-- **판정:** 언급 없음 → 🔴 / 일부 → 🟠 / PREFLIGHT·검증 단계 → 🟢
-- **증거:** 입력 검증 섹션
+- **+ 정량 검사 (Anthropic):** 결정적 작업(검증·계산·파싱) 키워드가 본문에 있는데 scripts/ 부재 → LLM에 결정적 계산 강요 안티패턴
+- **판정:** 언급 없음 + 결정적 작업이 LLM에 떠넘겨짐 → 🔴 / 일부 → 🟠 / PREFLIGHT·검증 단계 + scripts/ 적절 분리 → 🟢
+- **증거:** 입력 검증 섹션 + scripts/ 디렉토리 + 본문 키워드 매칭
 
 ### 4-3 외부 의존 실패
 - **패턴:** `vault_dependency`, fallback 경로
@@ -104,8 +112,14 @@
 
 ### 5-1 토큰 폭식
 - **측정:** SKILL.md 바이트·라인·토큰
-- **판정:** >10KB → 🔴 / 5-10KB → 🟠 / ≤5KB → 🟢
-- **증거:** `wc -c SKILL.md`
+- **+ 정량 검사 (Anthropic):**
+  - description ≤1024자 (공식 한도)
+  - SKILL.md ≤500줄 (공식 권장)
+- **판정 (가장 엄격한 위반 채택):**
+  - 🔴: SKILL.md >10KB OR description >1024자 OR 줄수 >500
+  - 🟠: 5-10KB OR description >900자 OR 줄수 >400
+  - 🟢: 모든 기준 통과
+- **증거:** `wc -c SKILL.md` + `wc -l SKILL.md` + description 자수
 
 ### 5-2 로딩 비효율
 - **패턴:** references/ 존재 여부 + 본문에 상세 내용 잔존
@@ -128,8 +142,9 @@
 
 ### 6-1 cascade 단절
 - **패턴:** NOT 섹션에 `→다른스킬` 라우팅 존재
-- **판정:** NOT 없음 → 🔴 / NOT 있으나 라우팅 없음 → 🟠 / NOT + 라우팅 명확 → 🟢
-- **증거:** NOT 라인
+- **+ 정량 검사 (Anthropic):** description에 부정 경계 (`DO NOT`·`except`·`NOT:`) 명시
+- **판정:** NOT 없음 + 부정 경계 없음 → 🔴 / NOT 있으나 라우팅 없음 OR 부정 경계만 있음 → 🟠 / NOT + 라우팅 + 부정 경계 → 🟢
+- **증거:** NOT 라인 + description 부정 경계 grep
 
 ### 6-2 트리거 충돌
 - **패턴:** 기존 스킬 P1과 겹침
@@ -167,8 +182,9 @@
 
 ### 7-4 버전관리 부재
 - **패턴:** CHANGELOG·version 필드
-- **판정:** 없음 → 🔴 / 주석만 → 🟠 / 명시 → 🟢
-- **증거:** CHANGELOG 파일 또는 frontmatter
+- **+ 정량 검사 (Anthropic):** frontmatter `license` 필드 존재 (anthropic-skills 4개 모두 보유)
+- **판정:** version 없음 + license 없음 → 🔴 / 둘 중 하나만 → 🟠 / 둘 다 명시 + CHANGELOG → 🟢
+- **증거:** frontmatter version·license + CHANGELOG.md 파일
 
 ---
 
@@ -193,3 +209,22 @@
 - **패턴:** session-briefing 연계·changelog 갱신
 - **판정:** 없음 → 🔴 / 부분 → 🟠 / 명시 → 🟢
 - **증거:** 연계 문장
+
+---
+
+## v2 통합 원칙 (베놈 DNA)
+
+각 셀의 정량 기준(Anthropic 공식)과 휴리스틱(grep)이 충돌할 때:
+1. **정량 우선** — 자수·줄수·필드규약 위반 시 grep PASS 무시하고 FAIL
+2. **가장 엄격한 판정 채택** — 한 셀에 여러 검사가 걸리면 worst-case
+3. **증거에 정량 수치 병기** — `description=1100자(>1024)` 식으로 명시
+
+이는 SKILL.md 절대규칙 6의 구체화. 별도 축이 아닌 32셀 내부에 자연 통합된 안트로픽 표준.
+
+---
+
+## Anthropic 공식 출처
+
+- [Skill authoring best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+- [Extend Claude with skills](https://code.claude.com/docs/en/skills)
+- anthropic-skills/{docx,xlsx,pptx,pdf} 4개 베스트프랙티스 역공학

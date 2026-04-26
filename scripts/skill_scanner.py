@@ -42,6 +42,15 @@ CAUSES = {
 
 GENERIC_KEYWORDS = ["정리", "분석", "만들기", "확인", "검토", "처리", "작성", "생성"]
 
+# v2 (Anthropic 베놈): description 모호 동사 — 트리거 매칭 정밀도 저하
+VAGUE_VERBS = ["helps with", "processes", "handles", "works with", "takes care of"]
+
+# v2 (Anthropic 베놈): description 1·2인칭 — 3인칭/명령형 권장 위반
+PERSON_PRONOUNS = [r"\bI\b", r"\bme\b", r"\bmy\b", r"\byou\b", r"\byour\b", r"우리는", r"제가"]
+
+# v2 (Anthropic 베놈): 결정적 작업 키워드 — scripts/ 부재 시 LLM 강요 안티패턴
+DETERMINISTIC_KEYWORDS = ["calculate", "validate", "parse", "검증", "계산", "파싱", "compute"]
+
 UP_INVARIANTS = ["HONORIFIC", "OVERWRITE_BAN", "PATTERN_GUARD", "STEALTH",
                  "ERROR_CORRECTION", "MODE_GATES", "INVARIANT"]
 
@@ -58,21 +67,15 @@ def read_file(path: Path) -> str:
 
 
 def is_up_target(target_path: Path, content: str) -> bool:
-    """Detect if target is UP (User Preferences).
-
-    Supports both legacy v35.x (M1/FAST_LANE/BEDROCK) and v37+ (3축: 진실성·독립성·현재성).
-    """
+    """Detect if target is UP (User Preferences)."""
     name = target_path.name.lower()
-    if "claude.md" in name or "up-" in name or name == "up.md" or "user-preferences" in name:
+    if "claude.md" in name or "up-" in name or name == "up.md":
         return True
-    # Legacy signatures (v35.x)
-    legacy = ["M1. FRAME", "M2. FAST_LANE", "BEDROCK", "CONFIDENCE",
-              "FAST_LANE", "DENSITY"]
-    # v37+ signatures (3축 관통)
-    v37 = ["진실성 —", "독립성 —", "현재성 —", "LLM 고유 단점", "확신도 병기", "hedge 9종"]
-    legacy_hits = sum(1 for s in legacy if s in content)
-    v37_hits = sum(1 for s in v37 if s in content)
-    return legacy_hits >= 3 or v37_hits >= 2
+    # Signature patterns
+    signatures = ["M1. FRAME", "M2. FAST_LANE", "BEDROCK", "CONFIDENCE",
+                  "FAST_LANE", "DENSITY"]
+    hits = sum(1 for s in signatures if s in content)
+    return hits >= 3
 
 
 def parse_frontmatter(content: str) -> Dict[str, Any]:
@@ -155,27 +158,29 @@ def check_1_4(content: str, files: List[Path]) -> Dict:
     return make_cell("WARN", "결정 구조 모호")
 
 
-def check_2_1(fm: Dict, content: str, is_up: bool = False) -> Dict:
-    """False Positive: generic P1 keywords. UP은 트리거 없음 → N/A."""
-    if is_up:
-        return make_cell("N/A", "UP은 상시 로드, 트리거 불필요")
+def check_2_1(fm: Dict, content: str) -> Dict:
+    """False Positive: generic P1 keywords + (v2) Anthropic 모호 동사"""
     desc = fm.get("description", "")
     p1_match = re.search(r"P1:\s*([^.]+)\.", desc)
     if not p1_match:
         return make_cell("FAIL", "P1 섹션 없음")
     p1_text = p1_match.group(1)
     generic_hits = [kw for kw in GENERIC_KEYWORDS if kw in p1_text]
-    if len(generic_hits) >= 3:
-        return make_cell("FAIL", f"일반 키워드 {len(generic_hits)}개: {generic_hits}")
+    # v2 베놈: Anthropic 모호 동사 검사
+    desc_lower = desc.lower()
+    vague_hits = [v for v in VAGUE_VERBS if v in desc_lower]
+    if len(generic_hits) >= 3 or vague_hits:
+        evid = []
+        if generic_hits: evid.append(f"일반 키워드 {len(generic_hits)}개: {generic_hits}")
+        if vague_hits: evid.append(f"모호 동사: {vague_hits}")
+        return make_cell("FAIL", " | ".join(evid))
     if len(generic_hits) >= 1:
         return make_cell("WARN", f"일반 키워드 {generic_hits}")
-    return make_cell("PASS", "도메인 특화 키워드만")
+    return make_cell("PASS", "도메인 특화 키워드만 + 모호 동사 없음")
 
 
-def check_2_2(fm: Dict, is_up: bool = False) -> Dict:
-    """False Negative: trigger tier minimums. UP은 트리거 없음 → N/A."""
-    if is_up:
-        return make_cell("N/A", "UP은 상시 로드, 트리거 티어 불필요")
+def check_2_2(fm: Dict) -> Dict:
+    """False Negative: trigger tier minimums"""
     desc = fm.get("description", "")
     p1 = count_trigger_tier(desc, "P1")
     p2 = count_trigger_tier(desc, "P2")
@@ -196,16 +201,28 @@ def check_2_2(fm: Dict, is_up: bool = False) -> Dict:
 
 
 def check_2_3(fm: Dict, content: str) -> Dict:
-    """Intent Drift: description vs body mismatch - heuristic"""
+    """Intent Drift: description vs body + (v2) Anthropic 3인칭/명령형"""
     desc = fm.get("description", "")
-    # Extract likely verbs from description
+    # v2 베놈: 1·2인칭 사용 검사
+    person_hits = []
+    for pattern in PERSON_PRONOUNS:
+        if re.search(pattern, desc):
+            person_hits.append(pattern.replace(r"\b", ""))
+    # 기존: desc-body 동사 일치
     desc_verbs = set(re.findall(r"(진단|평가|검진|수정|생성|분석|설계|변환|번역)", desc))
     body_verbs = set(re.findall(r"##.*?(진단|평가|검진|수정|생성|분석|설계|변환|번역)", content))
+    drift = False
     if desc_verbs and body_verbs:
         overlap = desc_verbs & body_verbs
         if len(overlap) / len(desc_verbs) < 0.5:
-            return make_cell("WARN", f"desc {desc_verbs} vs body {body_verbs}")
-    return make_cell("PASS", f"desc-body 동사 일치")
+            drift = True
+    if person_hits and drift:
+        return make_cell("FAIL", f"1·2인칭 {person_hits} + desc-body 불일치")
+    if person_hits:
+        return make_cell("WARN", f"1·2인칭 사용: {person_hits}")
+    if drift:
+        return make_cell("WARN", f"desc {desc_verbs} vs body {body_verbs}")
+    return make_cell("PASS", f"desc-body 일치 + 3인칭/명령형")
 
 
 def check_2_4(content: str) -> Dict:
@@ -234,59 +251,79 @@ def check_3_1(content: str) -> Dict:
     return make_cell("PASS", "스텔스 준수")
 
 
-def check_3_2(content: str, fm: Dict, is_up: bool = False) -> Dict:
-    """Learning Curve: examples + P2. UP은 트리거·예시 섹션 구조 아님 → N/A."""
-    if is_up:
-        return make_cell("N/A", "UP은 외부 체크리스트가 학습 지원")
+def check_3_2(content: str, fm: Dict) -> Dict:
+    """Learning Curve: examples + P2 + (v2) Anthropic Quick Reference 도입부"""
     p2 = count_trigger_tier(fm.get("description", ""), "P2")
     has_example = bool(re.search(r"##\s*예시|##\s*Example", content))
-    if not has_example and p2 < 2:
-        return make_cell("FAIL", f"예시 없음 + P2={p2}")
-    if not has_example or p2 < 2:
-        return make_cell("WARN", f"예시={has_example}, P2={p2}")
-    return make_cell("PASS", "예시 + P2 충분")
+    # v2 베놈: 첫 100줄 안에 Quick Reference / 도입 표 존재
+    head = "\n".join(content.split("\n")[:100])
+    has_quick_ref = bool(re.search(r"##\s*Quick Reference|##\s*도입|##\s*개요|^\s*\|.*\|.*\|", head, re.MULTILINE | re.IGNORECASE))
+    if not has_example and p2 < 2 and not has_quick_ref:
+        return make_cell("FAIL", f"예시 없음 + P2={p2} + 도입 표 없음")
+    if not has_example or p2 < 2 or not has_quick_ref:
+        return make_cell("WARN", f"예시={has_example}, P2={p2}, 도입표={has_quick_ref}")
+    return make_cell("PASS", "예시 + P2 + 도입 표 충분")
 
 
-def check_3_3(content: str, is_up: bool = False) -> Dict:
-    """Feedback Absence: Gotchas section. UP은 외부 체크리스트로 대체."""
-    if is_up:
-        # UP은 체크리스트 외부 분리 구조 — 본체 내부 Gotchas 섹션 불필요
-        return make_cell("N/A", "UP은 체크리스트 외부 분리 구조")
+def check_3_3(content: str) -> Dict:
+    """Feedback Absence: Gotchas + (v2) Anthropic ❌WRONG/✅CORRECT 대조"""
     gotchas_match = re.search(r"##\s*Gotchas.*?(?=##|\Z)", content, re.DOTALL | re.IGNORECASE)
     if not gotchas_match:
         return make_cell("FAIL", "Gotchas 섹션 없음")
     gotcha_lines = len([l for l in gotchas_match.group(0).split("\n") if l.strip().startswith("|")])
+    # v2 베놈: WRONG/CORRECT 또는 ❌/✅ 대조 (xlsx·docx 표준 패턴)
+    has_contrast = bool(re.search(r"WRONG.*CORRECT|CORRECT.*WRONG|❌.*✅|✅.*❌", content, re.DOTALL))
+    if gotcha_lines < 3 and not has_contrast:
+        return make_cell("WARN", f"Gotchas {gotcha_lines}행 + 대조 없음")
     if gotcha_lines < 3:
         return make_cell("WARN", f"Gotchas {gotcha_lines}행")
-    return make_cell("PASS", f"Gotchas {gotcha_lines}행")
+    if not has_contrast:
+        return make_cell("WARN", f"Gotchas {gotcha_lines}행, ❌/✅ 대조 없음")
+    return make_cell("PASS", f"Gotchas {gotcha_lines}행 + 대조 패턴")
 
 
 def check_3_4(fm: Dict, target_name: str) -> Dict:
-    """Memory Burden: name-function mapping"""
+    """Memory Burden: name-function + (v2) Anthropic name 형식 ^[a-z0-9-]{1,64}$"""
     desc = fm.get("description", "")
     first_line = desc.split(".")[0] if desc else ""
-    # Check if skill name words appear in first sentence
+    fm_name = fm.get("name", target_name)
+    # v2 베놈: name 형식 검사 (Anthropic 공식)
+    name_format_ok = bool(re.match(r"^[a-z0-9-]{1,64}$", fm_name))
+    # 기존: name-function 매핑
     name_parts = target_name.replace("-", " ").replace("_", " ").lower().split()
     matched = sum(1 for p in name_parts if p in first_line.lower())
+    if not name_format_ok:
+        return make_cell("FAIL", f"name='{fm_name}' 형식 위반 (^[a-z0-9-]{{1,64}}$)")
     if matched == 0 and name_parts:
         return make_cell("WARN", f"이름-기능 연결 불명")
-    return make_cell("PASS", "이름이 기능 암시")
+    return make_cell("PASS", "이름 형식·기능 암시 양호")
 
 
-def check_4_1(content: str) -> Dict:
-    """Prompt Injection defense"""
+def check_4_1(content: str, fm: Dict) -> Dict:
+    """Prompt Injection defense + (v2) Anthropic allowed-tools 권장"""
     has_defense = any(x in content for x in ["INVARIANT", "게이트키퍼", "절대 규칙", "반드시 우선"])
+    # v2 베놈: allowed-tools 화이트리스트 (선택사항이나 권장)
+    has_allowed_tools = "allowed-tools" in str(fm) or "allowed_tools" in str(fm)
     if not has_defense:
         return make_cell("WARN", "명시적 방어 규칙 없음")
-    return make_cell("PASS", "방어 규칙 존재")
+    if has_allowed_tools:
+        return make_cell("PASS", "방어 규칙 + allowed-tools")
+    return make_cell("PASS", "방어 규칙 존재 (allowed-tools 권장)")
 
 
-def check_4_2(content: str) -> Dict:
-    """Edge cases"""
+def check_4_2(content: str, files: List[Path]) -> Dict:
+    """Edge cases + (v2) Anthropic 결정적 작업의 scripts/ 위임"""
     has_preflight = "PREFLIGHT" in content or "입력 검증" in content or "empty" in content.lower()
+    # v2 베놈: 결정적 작업 키워드 + scripts/ 부재 → LLM 강요 안티패턴
+    content_lower = content.lower()
+    det_kw_hits = [k for k in DETERMINISTIC_KEYWORDS if k in content_lower]
+    has_scripts = any("scripts" in str(f) for f in files)
+    llm_forced = bool(det_kw_hits) and not has_scripts
+    if llm_forced:
+        return make_cell("FAIL", f"결정적 작업 {det_kw_hits} 있는데 scripts/ 부재 → LLM 강요")
     if not has_preflight:
         return make_cell("WARN", "PREFLIGHT/검증 단계 불명")
-    return make_cell("PASS", "입력 검증 언급")
+    return make_cell("PASS", f"검증 + scripts/ 적절{' (' + ','.join(det_kw_hits) + ')' if det_kw_hits else ''}")
 
 
 def check_4_3(content: str, fm: Dict) -> Dict:
@@ -311,16 +348,31 @@ def check_4_4(content: str) -> Dict:
     return make_cell("PASS", "재검증 규칙")
 
 
-def check_5_1(skill_md_path: Path) -> Dict:
-    """Token bloat"""
+def check_5_1(skill_md_path: Path, fm: Dict) -> Dict:
+    """Token bloat: KB + (v2) Anthropic description ≤1024자 + SKILL.md ≤500줄"""
     if not skill_md_path.exists():
         return make_cell("N/A", "SKILL.md 없음")
     size = skill_md_path.stat().st_size
-    if size > 10240:
-        return make_cell("FAIL", f"SKILL.md {size}B >10KB")
-    if size > 5120:
-        return make_cell("WARN", f"SKILL.md {size}B >5KB")
-    return make_cell("PASS", f"SKILL.md {size}B ≤5KB")
+    # v2 베놈: 정량 검사 추가
+    desc_len = len(fm.get("description", ""))
+    try:
+        line_count = skill_md_path.read_text(encoding="utf-8").count("\n") + 1
+    except Exception:
+        line_count = 0
+    # 가장 엄격한 위반 채택 (절대규칙 6: 정량 우선)
+    fail_reasons = []
+    warn_reasons = []
+    if size > 10240: fail_reasons.append(f"{size}B>10KB")
+    elif size > 5120: warn_reasons.append(f"{size}B>5KB")
+    if desc_len > 1024: fail_reasons.append(f"desc={desc_len}자>1024")
+    elif desc_len > 900: warn_reasons.append(f"desc={desc_len}자>900")
+    if line_count > 500: fail_reasons.append(f"{line_count}줄>500")
+    elif line_count > 400: warn_reasons.append(f"{line_count}줄>400")
+    if fail_reasons:
+        return make_cell("FAIL", " | ".join(fail_reasons))
+    if warn_reasons:
+        return make_cell("WARN", " | ".join(warn_reasons))
+    return make_cell("PASS", f"{size}B·desc={desc_len}자·{line_count}줄 모두 안전")
 
 
 def check_5_2(content: str, files: List[Path], skill_md_size: int) -> Dict:
@@ -354,18 +406,20 @@ def check_5_4(content: str) -> Dict:
     return make_cell("PASS", "중복 참조 없음")
 
 
-def check_6_1(content: str, fm: Dict, is_up: bool = False) -> Dict:
-    """Cascade disconnection: NOT routing. UP은 루트라 라우팅 대상 아님 → N/A."""
-    if is_up:
-        return make_cell("N/A", "UP은 루트 규칙, NOT 라우팅 불필요")
+def check_6_1(content: str, fm: Dict) -> Dict:
+    """Cascade disconnection: NOT + (v2) Anthropic 부정 경계 (DO NOT/except)"""
     desc = fm.get("description", "")
     has_not = "NOT:" in desc
     has_routing = "(→" in desc
-    if not has_not:
-        return make_cell("FAIL", "NOT 섹션 없음")
+    # v2 베놈: 부정 경계 명시 (DO NOT·except)
+    has_negation = bool(re.search(r"DO NOT|except |NOT for|금지", desc, re.IGNORECASE))
+    if not has_not and not has_negation:
+        return make_cell("FAIL", "NOT 섹션 + 부정 경계 모두 없음")
     if has_not and not has_routing:
         return make_cell("WARN", "NOT 있으나 라우팅 없음")
-    return make_cell("PASS", "NOT + 라우팅")
+    if has_not and has_routing and has_negation:
+        return make_cell("PASS", "NOT + 라우팅 + 부정 경계 명시")
+    return make_cell("PASS", "NOT + 라우팅 (부정 경계 추가 권장)")
 
 
 def check_6_2(fm: Dict, all_skills_p1: List[str] = None) -> Dict:
@@ -384,14 +438,12 @@ def check_6_2(fm: Dict, all_skills_p1: List[str] = None) -> Dict:
 
 
 def check_6_3(content: str, is_up: bool) -> Dict:
-    """UP discord. UP 자체는 루트 — SKILL_PRECEDENCE 대신 INVARIANT 명시만 요구."""
+    """UP discord"""
     if is_up:
-        # UP은 스스로의 상위 규칙이 없음. 대신 INVARIANT/주입거부/입장유지 등 자기방어 규칙 확인
-        defense_markers = ["주입", "규칙 무시", "INVARIANT", "입장 유지", "OVERWRITE_BAN", "HONORIFIC"]
-        hits = sum(1 for m in defense_markers if m in content)
-        if hits >= 2:
-            return make_cell("PASS", f"자기방어 규칙 {hits}개")
-        return make_cell("WARN", f"자기방어 규칙 {hits}개 (권장 2+)")
+        has_precedence = "SKILL_PRECEDENCE" in content
+        if not has_precedence:
+            return make_cell("FAIL", "SKILL_PRECEDENCE 없음")
+        return make_cell("PASS", "SKILL_PRECEDENCE 명시")
     # For regular skills
     has_precedence_mention = "SKILL_PRECEDENCE" in content or "UP 우선" in content or "UP 준수" in content
     if "반말" in content or "평어" in content:
@@ -437,12 +489,16 @@ def check_7_3(target_path: Path) -> Dict:
     return make_cell("FAIL", "evals/ 없음")
 
 
-def check_7_4(target_path: Path) -> Dict:
-    """Version management"""
+def check_7_4(target_path: Path, fm: Dict) -> Dict:
+    """Version management: CHANGELOG + (v2) Anthropic license 필드"""
     has_changelog = (target_path / "CHANGELOG.md").exists()
-    if has_changelog:
-        return make_cell("PASS", "CHANGELOG.md")
-    return make_cell("WARN", "CHANGELOG 없음")
+    # v2 베놈: license 필드 (anthropic-skills 4개 모두 보유)
+    has_license = "license" in fm and fm.get("license", "").strip()
+    if has_changelog and has_license:
+        return make_cell("PASS", "CHANGELOG.md + license 필드")
+    if has_changelog or has_license:
+        return make_cell("WARN", f"CHANGELOG={has_changelog}, license={bool(has_license)}")
+    return make_cell("FAIL", "CHANGELOG + license 모두 없음")
 
 
 def check_8_1(content: str) -> Dict:
@@ -499,30 +555,30 @@ def scan_target(target_path: Path) -> Dict:
     cells["1-2"] = check_1_2(content, files)
     cells["1-3"] = check_1_3(content, files)
     cells["1-4"] = check_1_4(content, files)
-    cells["2-1"] = check_2_1(fm, content, is_up)
-    cells["2-2"] = check_2_2(fm, is_up)
+    cells["2-1"] = check_2_1(fm, content)
+    cells["2-2"] = check_2_2(fm)
     cells["2-3"] = check_2_3(fm, content)
     cells["2-4"] = check_2_4(content)
     cells["3-1"] = check_3_1(content)
-    cells["3-2"] = check_3_2(content, fm, is_up)
-    cells["3-3"] = check_3_3(content, is_up)
+    cells["3-2"] = check_3_2(content, fm)
+    cells["3-3"] = check_3_3(content)
     cells["3-4"] = check_3_4(fm, target_path.name)
-    cells["4-1"] = check_4_1(content)
-    cells["4-2"] = check_4_2(content)
+    cells["4-1"] = check_4_1(content, fm)
+    cells["4-2"] = check_4_2(content, files)
     cells["4-3"] = check_4_3(content, fm)
     cells["4-4"] = check_4_4(content)
-    cells["5-1"] = check_5_1(skill_md)
+    cells["5-1"] = check_5_1(skill_md, fm)
     cells["5-2"] = check_5_2(content, files, skill_md_size)
     cells["5-3"] = check_5_3(content)
     cells["5-4"] = check_5_4(content)
-    cells["6-1"] = check_6_1(content, fm, is_up)
+    cells["6-1"] = check_6_1(content, fm)
     cells["6-2"] = check_6_2(fm)
     cells["6-3"] = check_6_3(content, is_up)
     cells["6-4"] = check_6_4(content, target_path.name)
     cells["7-1"] = check_7_1(content, fm)
     cells["7-2"] = check_7_2(content, is_up)
     cells["7-3"] = check_7_3(target_path if target_path.is_dir() else target_path.parent)
-    cells["7-4"] = check_7_4(target_path if target_path.is_dir() else target_path.parent)
+    cells["7-4"] = check_7_4(target_path if target_path.is_dir() else target_path.parent, fm)
     cells["8-1"] = check_8_1(content)
     cells["8-2"] = check_8_2(content)
     cells["8-3"] = check_8_3(content)

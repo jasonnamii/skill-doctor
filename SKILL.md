@@ -1,5 +1,7 @@
 ---
 name: skill-doctor
+version: 2.0.0
+license: Proprietary. LICENSE.txt has complete terms
 description: |
   스킬·UP 8대 병리(느림·부정확·불통·취약·비대·고립·진화불능·무자각)×4원인=32셀 매트릭스 진단엔진. 진단·처방·모니터 3모드+UP특화. Python 스캐너 내장.
   P1: 스킬닥터, skill doctor, skill-doctor, 스킬진단, UP진단, 스킬검진, 스킬감사, 스킬병리, 32셀매트릭스, 8대병리, 스킬건강.
@@ -19,12 +21,12 @@ description: |
 
 | # | 규칙 | 이유 |
 |---|------|------|
-| 1 | **진단만 수행** — 스킬 파일을 직접 수정하지 않음. 처방전만 발행, 수정은 skill-builder에 위임 | 진단과 치료 분리 (측정 주체가 수정하면 편향) |
+| 1 | **진단만 수행** — 스킬 파일을 직접 수정하지 않음. 처방전·handoff.json만 발행, 수정은 skill-builder에 위임 | 진단과 치료 분리 (측정 주체가 수정하면 편향) |
 | 2 | **32셀 전수 점검** — 8병리×4원인 누락 없이. 해당없음은 `N/A` 명시 | MECE 보장, 사각지대 차단 |
 | 3 | **증거 기반 판정** — FAIL/WARN 시 반드시 근거(파일경로·라인·grep결과) 병기 | 주관 판정 금지 |
 | 4 | **UP은 가중치 모드** — UP 진단 시 `references/up-specific-rules.md` 자동 로드, 비대·고립·진화불능 가중치 ×3 | 상시 로드 특성 반영 |
 | 5 | **자기참조 허용** — skill-doctor로 skill-doctor 진단 가능 (무한루프 방지 위해 1회만) | 자기검증 필수 |
-| 6 | **LLM-native 비용 추정** — 처방에는 `턴 수 + 롤백(L/M/H) + 회귀리스크(L/M/H)` 3축만. 분·시간·man-hour 단위 사용 = FAIL | LLM 실행은 인간 공수와 비용 구조가 다름. 분 단위는 가짜 정밀도 |
+| 6 | **결정성 우선** — 같은 셀에 여러 검사가 걸리면 가장 엄격한 판정 채택. 정량 기준(자수·줄수·필드규약)이 휴리스틱(grep)보다 우선 | 진단 결과 재현성·표준 정합성 보장 |
 
 ---
 
@@ -62,7 +64,7 @@ find /sessions/{session}/mnt/.claude/skills/{target}/ -type f | head -20
 ### ③ 32셀 스캔
 
 **프레임:** `→ references/framework-8x4.md` (8대 병리×4대 원인 정의)
-**체크리스트:** `→ references/diagnostic-checklist.md` (32셀 grep·규칙 패턴)
+**체크리스트:** `→ references/diagnostic-checklist.md` (32셀 grep·규칙·정량 기준 통합)
 **Python 자동 스캐너:**
 ```bash
 python /sessions/{session}/skill-doctor/scripts/skill_scanner.py scan {target_path}
@@ -80,11 +82,11 @@ python /sessions/{session}/skill-doctor/scripts/report_generator.py \
 ```
 
 **리포트 구조:**
-1. 전체 건강 점수 (🟢≥80 / 🟠 60-79 / 🔴<60)
+1. 전체 건강 점수 (🟢≥85 / 🟠 60-84 / 🔴<60)
 2. 8×4 매트릭스 시각화
 3. 레드플래그 Top3 (증거 포함)
 4. 처방 우선순위 (트리아지: 긴급×중요)
-5. 개선 액션 목록 (skill-builder로 위임)
+5. 개선 액션 목록 + handoff.json (skill-builder로 위임)
 
 ---
 
@@ -113,7 +115,7 @@ python /sessions/{session}/skill-doctor/scripts/report_generator.py \
 
 Claude: [skill-doctor 발동]
 1. PREFLIGHT → SKILL.md 존재 확인
-2. 모드 판정 → 진단 모드
+2. 모드 선택 → 진단 모드
 3. 대상 로드 → ruby-skill/SKILL.md + references/
 4. 32셀 스캔 (skill_scanner.py 실행)
 5. 리포트 발행 (report_generator.py)
@@ -136,7 +138,7 @@ python skill-doctor/scripts/skill_scanner.py scan ./skill-doctor/ > self-scan.js
 python skill-doctor/scripts/report_generator.py --scan-result self-scan.json --target skill-doctor --out self-report.md
 ```
 
-- 목표 점수: 🟢 ≥80 또는 🟠 ≥70
+- 목표 점수: 🟢 ≥85 (v2 강화 기준), FAIL 셀 0개
 - evals/cases.json에 5개 샘플 케이스 포함 — validate 시 비교 기준
 
 ---
@@ -152,4 +154,18 @@ python skill-doctor/scripts/report_generator.py --scan-result self-scan.json --t
 | 진단→수정 직행 | skill-doctor는 진단만. 수정은 반드시 skill-builder로 위임 (절대규칙 1) |
 | 32셀 일부 스킵 | N/A도 명시 필수. 빈 셀 = FAIL (MECE 깨짐) |
 | Python 스크립트 미실행 | 수동 체크는 오류 가능. 반드시 skill_scanner.py 실행 후 결과 검토 |
-| 처방전에 "30분·2시간" 식 man-hour 단위 | LLM 비용과 무관 — 가짜 정밀도로 사용자 판단 왜곡. `턴+R+RegR` 3축으로만 기재 (절대규칙 6) |
+| 정량 기준과 휴리스틱 충돌 | 정량 우선 (절대규칙 6). 자수·줄수·필드규약 위반 시 grep PASS 무시하고 FAIL |
+| 에러 시 침묵 | 모든 검사 실패는 STOP + 보고. evidence 누락 = 재실행 |
+| session-briefing 연계 누락 | 진단·처방 결과는 session-briefing 발동 시 자동 첨부 |
+
+## ❌ WRONG vs ✅ CORRECT
+
+```
+❌ WRONG: "ruby-skill 좀 취약해 보여" (증거 없음 → 주관 판정)
+✅ CORRECT: "[4-2] PREFLIGHT 누락 (line 23, grep '입력 검증' 0건)"
+```
+
+```
+❌ WRONG: 진단 후 SKILL.md 직접 수정 (절대규칙 1 위반)
+✅ CORRECT: 진단 → handoff.json 발행 → skill-builder 위임
+```
